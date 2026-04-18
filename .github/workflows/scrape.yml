@@ -1,0 +1,46 @@
+name: TMDB Smart Archive Scraper
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_year:
+        description: 'سال شروع (مثلاً 2000)'
+        required: true
+        default: '2000'
+        type: string
+      end_year:
+        description: 'سال پایان (مثلاً 2026)'
+        required: true
+        default: '2026'
+        type: string
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+      - name: 📥 دریافت کدها از مخزن
+        uses: actions/checkout@v4
+      
+      - name: 🐍 نصب پایتون
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: 📦 نصب کتابخانه‌های مورد نیاز
+        run: |
+          pip install requests
+      
+      - name: 🚀 اجرای اسکریپت اسکرپینگ
+        env:
+          TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
+        run: |
+          echo "${{ github.event.inputs.start_year }} ${{ github.event.inputs.end_year }}" | python tmdb_smart_scraper.py
+      
+      - name: 📤 آپلود خروجی (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmdb-archive
+          path: iran_smart_archive_*.json
+          retention-days: 90
