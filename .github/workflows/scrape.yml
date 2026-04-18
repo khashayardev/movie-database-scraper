@@ -1,4 +1,4 @@
-name: TMDB Smart Archive Scraper
+name: TMDB Complete Archive Scraper
 
 on:
   workflow_dispatch:
@@ -13,14 +13,21 @@ on:
         required: true
         default: '2026'
         type: string
+      min_rating:
+        description: 'حداقل امتیاز (مثلاً 7.0)'
+        required: false
+        default: '7.0'
+        type: string
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     
     steps:
-      - name: 📥 دریافت کدها از مخزن
+      - name: 📥 دریافت کدها
         uses: actions/checkout@v4
       
       - name: 🐍 نصب پایتون
@@ -28,19 +35,19 @@ jobs:
         with:
           python-version: '3.11'
       
-      - name: 📦 نصب کتابخانه‌های مورد نیاز
+      - name: 📦 نصب کتابخانه‌ها
         run: |
           pip install requests
       
-      - name: 🚀 اجرای اسکریپت اسکرپینگ
+      - name: 🚀 اجرای اسکریپت اسکرپینگ کامل
         env:
           TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
         run: |
-          echo "${{ github.event.inputs.start_year }} ${{ github.event.inputs.end_year }}" | python tmdb_smart_scraper.py
+          python tmdb_complete_scraper.py ${{ github.event.inputs.start_year }} ${{ github.event.inputs.end_year }} ${{ github.event.inputs.min_rating }}
       
-      - name: 📤 آپلود خروجی (Artifact)
+      - name: 📤 آپلود خروجی
         uses: actions/upload-artifact@v4
         with:
-          name: tmdb-archive
-          path: iran_smart_archive_*.json
+          name: complete-movies-archive
+          path: complete_movies_archive_*.json
           retention-days: 90
