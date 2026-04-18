@@ -1,362 +1,193 @@
-# tmdb_annual_scraper.py
+# tmdb_smart_scraper.py
 import requests
 import json
+import time
 import os
+import sys
 from datetime import datetime
 from typing import List, Dict, Optional
-import time
 
-class TMDBAnnualScraper:
-    def __init__(self, api_key: str, access_token: str):
-        """
-        اسکرپر تعاملی TMDB برای دریافت محتوای یک سال خاص
-        
-        Args:
-            api_key: کلید API TMDB
-            access_token: توکن دسترسی خواندن
-        """
-        self.api_key = api_key
-        self.access_token = access_token
+class TMDBIranScraper:
+    def __init__(self, access_token: str):
         self.base_url = "https://api.themoviedb.org/3"
-        
-        # هدرهای احراز هویت
         self.headers = {
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json;charset=utf-8"
         }
-        
-        self.results = []
-        
-    def get_user_input(self) -> tuple:
-        """گرفتن ورودی از کاربر"""
-        print("\n" + "="*60)
-        print("🎬 اسکریپت دریافت محتوای سالانه از TMDB")
-        print("="*60)
-        
-        # دریافت سال
-        while True:
-            try:
-                year = input("\n📅 سال مورد نظر را وارد کنید (مثال: 2025): ").strip()
-                year = int(year)
-                if 1900 <= year <= 2030:
-                    break
-                else:
-                    print("❌ سال باید بین 1900 تا 2030 باشد!")
-            except ValueError:
-                print("❌ لطفاً یک عدد معتبر وارد کنید!")
-        
-        # دریافت نوع محتوا
-        while True:
-            content_type = input("\n🎯 نوع محتوا را انتخاب کنید (Movie / Series): ").strip().lower()
-            if content_type in ['movie', 'series', 'm', 's']:
-                if content_type in ['m', 'movie']:
-                    content_type = 'movie'
-                else:
-                    content_type = 'tv'
-                break
-            else:
-                print("❌ لطفاً 'Movie' یا 'Series' را وارد کنید!")
-        
-        print(f"\n✅ شروع دریافت {content_type.upper()}های سال {year}...")
-        return year, content_type
-    
-    def fetch_with_pagination(self, endpoint: str, params: Dict) -> List[Dict]:
-        """
-        دریافت داده‌ها با مدیریت pagination (صفحه‌بندی)
-        """
-        all_results = []
-        page = 1
-        total_pages = 1
-        
-        while page <= total_pages:
-            params['page'] = page
-            
-            try:
-                response = requests.get(
-                    f"{self.base_url}{endpoint}",
-                    headers=self.headers,
-                    params=params,
-                    timeout=30
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    results = data.get('results', [])
-                    all_results.extend(results)
-                    
-                    total_pages = data.get('total_pages', 1)
-                    print(f"   📄 صفحه {page}/{total_pages} - {len(results)} آیتم دریافت شد")
-                    
-                    page += 1
-                    time.sleep(0.2)  # تاخیر جزئی برای جلوگیری از rate limiting
-                    
-                elif response.status_code == 429:
-                    print(f"   ⚠️ درخواست زیاد! 5 ثانیه صبر کنید...")
-                    time.sleep(5)
-                    
-                else:
-                    print(f"   ❌ خطا {response.status_code}: {response.text[:100]}")
-                    break
-                    
-            except requests.exceptions.RequestException as e:
-                print(f"   ❌ خطای شبکه: {e}")
-                break
-        
-        print(f"   ✅ مجموع: {len(all_results)} آیتم دریافت شد")
-        return all_results
-    
-    def fetch_movies_by_year(self, year: int) -> List[Dict]:
-        """دریافت فیلم‌های یک سال خاص"""
-        print(f"\n🎬 دریافت فیلم‌های سال {year}...")
-        
-        # روش اول: استفاده از discover/movie
+        # لیست ID ژانرهای محبوب نزد مخاطب ایرانی
+        self.popular_genres = [28, 12, 35, 18, 53, 878, 10749, 16, 80]
+
+    def _get_genre_names(self) -> Dict[int, str]:
+        """دریافت لیست اسامی ژانرها از API"""
+        try:
+            resp = requests.get(f"{self.base_url}/genre/movie/list", headers=self.headers, timeout=10)
+            if resp.status_code == 200:
+                return {g['id']: g['name'] for g in resp.json().get('genres', [])}
+        except:
+            pass
+        return {}
+
+    def fetch_movies(self, year: int, min_votes: int, min_rating: float, limit: int = 100) -> List[Dict]:
+        """دریافت فیلم‌های یک سال با فیلترهای مشخص"""
         params = {
             "primary_release_year": year,
-            "sort_by": "popularity.desc",
-            "language": "fa-IR",  # ترجیحاً به فارسی
+            "sort_by": "vote_average.desc",
+            "vote_count.gte": min_votes,
+            "vote_average.gte": min_rating,
+            "with_genres": ",".join(map(str, self.popular_genres)),
             "include_adult": False
         }
         
-        movies = self.fetch_with_pagination("/discover/movie", params)
+        print(f"   🔍 فیلترها: حداقل {min_votes} رای | امتیاز >= {min_rating}")
+        all_movies = []
+        page, pages = 1, 1
         
-        # برای هر فیلم، اطلاعات بیشتری دریافت کن
-        enriched_movies = []
-        for i, movie in enumerate(movies, 1):
-            print(f"   🔄 دریافت جزئیات فیلم {i}/{len(movies)}: {movie.get('title', 'Unknown')}")
-            details = self.get_movie_details(movie['id'])
-            enriched_movies.append(details)
-            time.sleep(0.1)
+        while page <= pages and len(all_movies) < limit:
+            params['page'] = page
+            try:
+                resp = requests.get(f"{self.base_url}/discover/movie", headers=self.headers, params=params, timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    all_movies.extend(data['results'])
+                    pages = min(data.get('total_pages', 1), 10)
+                    page += 1
+                    time.sleep(0.1)
+                else:
+                    break
+            except Exception as e:
+                print(f"      خطا: {e}")
+                break
         
-        return enriched_movies
-    
-    def fetch_series_by_year(self, year: int) -> List[Dict]:
-        """دریافت سریال‌های یک سال خاص"""
-        print(f"\n📺 دریافت سریال‌های سال {year}...")
-        
-        # روش اول: استفاده از discover/tv
+        unique_movies = {m['id']: m for m in all_movies}.values()
+        return sorted(list(unique_movies), key=lambda x: x.get('vote_average', 0), reverse=True)[:limit]
+
+    def fetch_iranian_movies(self, year: int, min_votes: int = 100, limit: int = 20) -> List[Dict]:
+        """دریافت فیلم‌های ایرانی یک سال"""
         params = {
-            "first_air_date_year": year,
-            "sort_by": "popularity.desc",
-            "language": "fa-IR",
+            "primary_release_year": year,
+            "with_origin_country": "IR",
+            "sort_by": "vote_average.desc",
+            "vote_count.gte": min_votes,
             "include_adult": False
         }
         
-        series_list = self.fetch_with_pagination("/discover/tv", params)
+        print(f"   🇮🇷 فیلتر ایرانی: حداقل {min_votes} رای")
+        all_movies = []
+        page, pages = 1, 1
         
-        # برای هر سریال، اطلاعات بیشتری دریافت کن
-        enriched_series = []
-        for i, series in enumerate(series_list, 1):
-            print(f"   🔄 دریافت جزئیات سریال {i}/{len(series_list)}: {series.get('name', 'Unknown')}")
-            details = self.get_tv_details(series['id'])
-            enriched_series.append(details)
-            time.sleep(0.1)
+        while page <= pages and len(all_movies) < limit:
+            params['page'] = page
+            try:
+                resp = requests.get(f"{self.base_url}/discover/movie", headers=self.headers, params=params, timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    all_movies.extend(data['results'])
+                    pages = min(data.get('total_pages', 1), 5)
+                    page += 1
+                    time.sleep(0.1)
+                else:
+                    break
+            except Exception as e:
+                print(f"      خطا: {e}")
+                break
         
-        return enriched_series
-    
+        unique_movies = {m['id']: m for m in all_movies}.values()
+        return sorted(list(unique_movies), key=lambda x: x.get('vote_average', 0), reverse=True)[:limit]
+
     def get_movie_details(self, movie_id: int) -> Dict:
         """دریافت جزئیات کامل یک فیلم"""
         try:
-            response = requests.get(
+            resp = requests.get(
                 f"{self.base_url}/movie/{movie_id}",
                 headers=self.headers,
-                params={
-                    "language": "fa-IR",
-                    "append_to_response": "credits,keywords,similar,recommendations"
-                },
-                timeout=30
+                params={"append_to_response": "credits", "language": "fa-IR"},
+                timeout=15
             )
-            
-            if response.status_code == 200:
-                data = response.json()
-                # اضافه کردن لینک پوستر کامل
+            if resp.status_code == 200:
+                data = resp.json()
                 if data.get('poster_path'):
-                    data['poster_url'] = f"https://image.tmdb.org/t/p/w500{data['poster_path']}"
-                if data.get('backdrop_path'):
-                    data['backdrop_url'] = f"https://image.tmdb.org/t/p/w1280{data['backdrop_path']}"
+                    data['poster_url'] = f"https://image.tmdb.org/t/p/w342{data['poster_path']}"
+                if data.get('credits'):
+                    data['credits'] = {
+                        'director': next((c['name'] for c in data['credits']['crew'] if c['job'] == 'Director'), None),
+                        'cast': [c['name'] for c in data['credits']['cast'][:5]]
+                    }
                 return data
-            else:
-                return {'id': movie_id, 'error': f"خطا {response.status_code}"}
-                
-        except Exception as e:
-            return {'id': movie_id, 'error': str(e)}
-    
-    def get_tv_details(self, tv_id: int) -> Dict:
-        """دریافت جزئیات کامل یک سریال"""
-        try:
-            response = requests.get(
-                f"{self.base_url}/tv/{tv_id}",
-                headers=self.headers,
-                params={
-                    "language": "fa-IR",
-                    "append_to_response": "credits,keywords,similar,recommendations"
-                },
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('poster_path'):
-                    data['poster_url'] = f"https://image.tmdb.org/t/p/w500{data['poster_path']}"
-                if data.get('backdrop_path'):
-                    data['backdrop_url'] = f"https://image.tmdb.org/t/p/w1280{data['backdrop_path']}"
-                return data
-            else:
-                return {'id': tv_id, 'error': f"خطا {response.status_code}"}
-                
-        except Exception as e:
-            return {'id': tv_id, 'error': str(e)}
-    
-    def save_results(self, year: int, content_type: str, data: List[Dict]):
-        """ذخیره نتایج در فایل JSON"""
-        # نام فایل
-        filename = f"tmdb_{content_type}_{year}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            return {}
+        except:
+            return {}
+
+    def scrape_yearly_archive(self, start_year: int, end_year: int):
+        """اسکرپ سال‌های مورد نظر"""
+        print(f"\n🎬 شروع ساخت آرشیو هوشمند از {start_year} تا {end_year}")
+        print("="*60)
         
-        # اطلاعات کامل
-        output_data = {
+        archive = {
             'metadata': {
-                'year': year,
-                'content_type': content_type,
-                'total_count': len(data),
+                'start_year': start_year,
+                'end_year': end_year,
+                'total_years': end_year - start_year + 1,
                 'extraction_date': datetime.now().isoformat(),
-                'api_version': '3'
             },
-            'results': data
+            'movies': []
         }
         
-        # ذخیره فایل اصلی
+        for year in range(start_year, end_year + 1):
+            print(f"\n📅 سال {year}:")
+            
+            print("   🌍 فیلم‌های بین‌المللی...")
+            world_movies = self.fetch_movies(year, min_votes=500, min_rating=6.5, limit=100)
+            
+            print("   🇮🇷 فیلم‌های ایرانی...")
+            iranian_movies = self.fetch_iranian_movies(year, min_votes=100, limit=20)
+            
+            all_movies = {m['id']: m for m in world_movies + iranian_movies}.values()
+            
+            detailed_movies = []
+            for movie in list(all_movies):
+                print(f"      🔄 {movie.get('title', 'Unknown')[:40]}...")
+                details = self.get_movie_details(movie['id'])
+                if details:
+                    details['is_iranian'] = movie['id'] in [m['id'] for m in iranian_movies]
+                    detailed_movies.append(details)
+                time.sleep(0.05)
+            
+            archive['movies'].extend(detailed_movies)
+            print(f"   ✅ {len(detailed_movies)} فیلم برای سال {year}")
+        
+        self.save_archive(archive)
+        return archive
+
+    def save_archive(self, archive: Dict):
+        filename = f"iran_smart_archive_{archive['metadata']['start_year']}_{archive['metadata']['end_year']}.json"
         with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=2)
-        
-        print(f"\n💾 فایل ذخیره شد: {filename}")
-        
-        # ذخیره نسخه ساده (فقط اطلاعات پایه)
-        simple_filename = filename.replace('.json', '_simple.json')
-        simple_data = []
-        for item in data:
-            if content_type == 'movie':
-                simple_data.append({
-                    'id': item.get('id'),
-                    'title': item.get('title'),
-                    'original_title': item.get('original_title'),
-                    'release_date': item.get('release_date'),
-                    'vote_average': item.get('vote_average'),
-                    'vote_count': item.get('vote_count'),
-                    'popularity': item.get('popularity'),
-                    'overview': item.get('overview'),
-                    'poster_url': item.get('poster_url')
-                })
-            else:
-                simple_data.append({
-                    'id': item.get('id'),
-                    'name': item.get('name'),
-                    'original_name': item.get('original_name'),
-                    'first_air_date': item.get('first_air_date'),
-                    'vote_average': item.get('vote_average'),
-                    'vote_count': item.get('vote_count'),
-                    'popularity': item.get('popularity'),
-                    'overview': item.get('overview'),
-                    'poster_url': item.get('poster_url')
-                })
-        
-        with open(simple_filename, 'w', encoding='utf-8') as f:
-            json.dump(simple_data, f, ensure_ascii=False, indent=2)
-        
-        print(f"📁 نسخه ساده: {simple_filename}")
-        
-        # نمایش آمار
-        self.show_statistics(simple_data, content_type)
-    
-    def show_statistics(self, data: List[Dict], content_type: str):
-        """نمایش آمار ساده از داده‌های دریافت شده"""
-        if not data:
-            print("\n⚠️ هیچ داده‌ای دریافت نشد!")
-            return
-        
-        print("\n" + "="*60)
-        print("📊 آمار دریافت شده:")
-        print("="*60)
-        print(f"تعداد کل: {len(data)}")
-        
-        if content_type == 'movie':
-            titles = [item.get('title', 'N/A') for item in data[:10]]
-            avg_rating = sum(item.get('vote_average', 0) for item in data if item.get('vote_average')) / len(data)
-            print(f"میانگین امتیاز: {avg_rating:.2f}/10")
-            print(f"\n۱۰ فیلم اول:")
-            for i, title in enumerate(titles, 1):
-                print(f"  {i}. {title}")
-        else:
-            titles = [item.get('name', 'N/A') for item in data[:10]]
-            avg_rating = sum(item.get('vote_average', 0) for item in data if item.get('vote_average')) / len(data)
-            print(f"میانگین امتیاز: {avg_rating:.2f}/10")
-            print(f"\n۱۰ سریال اول:")
-            for i, title in enumerate(titles, 1):
-                print(f"  {i}. {title}")
-        
-        print("="*60)
-
-
-def check_internet_connection():
-    """بررسی اتصال به اینترنت (بین‌الملل)"""
-    import socket
-    try:
-        socket.create_connection(("api.themoviedb.org", 443), timeout=5)
-        return True
-    except OSError:
-        return False
+            json.dump(archive, f, ensure_ascii=False, indent=2)
+        print(f"\n💾 آرشیو در {filename} ذخیره شد")
+        return filename
 
 
 def main():
-    # اطلاعات API شما
-    API_KEY = "de8661ab534e482cc27a11a3d249465a"
-    ACCESS_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkZTg2NjFhYjUzNGU0ODJjYzI3YTExYTNkMjQ5NDY1YSIsIm5iZiI6MTc3NjU0NDMzMC4yNTQwMDAyLCJzdWIiOiI2OWUzZWE0YTEwYjkwODJiNTM1ZTczMTgiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.4dFTDQvwo-NlUG2TVODypgZ_2rAgCDlhlutPEIBXYPo"
+    ACCESS_TOKEN = os.environ.get('TMDB_ACCESS_TOKEN')
     
-    # بررسی اتصال به اینترنت
-    print("\n🌐 در حال بررسی اتصال به API TMDB...")
-    if not check_internet_connection():
-        print("⚠️ هشدار: به نظر می‌رسد دسترسی به اینترنت بین‌الملل ندارید!")
-        print("⚠️ اگر API TMDB مسدود باشد، اسکریپت کار نخواهد کرد.")
-        print("   ممکن است نیاز به استفاده از VPN یا پروکسی داشته باشید.\n")
-        
-        continue_anyway = input("آیا می‌خواهید ادامه دهید؟ (y/n): ").strip().lower()
-        if continue_anyway != 'y':
-            print("❌ اسکریپت متوقف شد.")
-            return
+    if not ACCESS_TOKEN:
+        print("❌ خطا: TMDB_ACCESS_TOKEN پیدا نشد!")
+        print("لطفاً Secret را در GitHub تنظیم کنید.")
+        sys.exit(1)
     
-    # ایجاد نمونه از اسکرپر
-    scraper = TMDBAnnualScraper(API_KEY, ACCESS_TOKEN)
+    scraper = TMDBIranScraper(ACCESS_TOKEN)
     
-    # گرفتن ورودی از کاربر
-    year, content_type = scraper.get_user_input()
-    
-    # دریافت داده‌ها
-    print("\n" + "="*60)
-    print("⏳ در حال دریافت اطلاعات از API TMDB...")
-    print("⚠️ این عملیات ممکن است چند دقیقه طول بکشد.")
-    print("="*60)
-    
-    if content_type == 'movie':
-        results = scraper.fetch_movies_by_year(year)
+    # دریافت سال‌ها از آرگومان‌های خط فرمان یا ورودی
+    if len(sys.argv) > 2:
+        start_year = int(sys.argv[1])
+        end_year = int(sys.argv[2])
     else:
-        results = scraper.fetch_series_by_year(year)
+        start_year = 2000
+        end_year = 2026
     
-    # ذخیره نتایج
-    if results:
-        scraper.save_results(year, content_type, results)
-        print(f"\n✅ عملیات با موفقیت کامل شد! {len(results)} آیتم ذخیره شد.")
-    else:
-        print("\n❌ هیچ داده‌ای دریافت نشد!")
-        print("ممکن است:")
-        print("  ۱. سال وارد شده اشتباه باشد")
-        print("  ۲. دسترسی به اینترنت بین‌الملل وجود ندارد")
-        print("  ۳. API Key معتبر نیست")
+    print(f"\n🔥 شروع اسکرپینگ {start_year} تا {end_year}")
+    scraper.scrape_yearly_archive(start_year, end_year)
+    print("\n✅ فرآیند کامل شد!")
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\n⚠️ اسکریپت توسط کاربر متوقف شد.")
-    except Exception as e:
-        print(f"\n❌ خطای غیرمنتظره: {e}")
-        import traceback
-        traceback.print_exc()
+    main()
